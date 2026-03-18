@@ -1,0 +1,82 @@
+﻿<Window x:Class="AeroHear.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:AeroHear"
+        mc:Ignorable="d"
+        Title="AeroHear" Height="500" Width="650">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Recherche fichier -->
+        <Grid Grid.Row="0" Margin="0,0,0,15">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="FilePathTextBox" Grid.Column="0" IsReadOnly="True" Margin="0,0,10,0" VerticalContentAlignment="Center" FontSize="14" />
+            <Button Content="Parcourir..." Grid.Column="1" Width="100" Height="30" Click="BrowseButton_Click"/>
+        </Grid>
+
+        <TextBlock Grid.Row="1" Text="Périphériques audio disponibles :" FontSize="16" FontWeight="Bold" Margin="0,0,0,10" />
+
+        <ListBox Grid.Row="2" ItemsSource="{Binding AudioDevices}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Margin="5">
+                        <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" VerticalAlignment="Center" FontSize="14" Width="170" />
+
+                        <!-- Nouveau bloc pour configurer individuellement le volume sous Windows -->
+                        <TextBlock Text="Système Vol:" VerticalAlignment="Center" Margin="10,0,5,0" FontSize="12" Foreground="Gray"/>
+                        <Slider Width="60" Minimum="0" Maximum="100" Value="{Binding DeviceVolume, Mode=TwoWay}" VerticalAlignment="Center" />
+                        <CheckBox Content="Muet" IsChecked="{Binding IsMuted, Mode=TwoWay}" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" Foreground="Gray"/>
+
+                        <!-- Options de délai -->
+                        <TextBlock Text="Délai:" VerticalAlignment="Center" Margin="15,0,5,0" FontSize="12" Foreground="Gray"/>
+                        <Slider Width="80" Minimum="0" Maximum="1500" Value="{Binding DelayMs, Mode=TwoWay}" VerticalAlignment="Center" LargeChange="50" SmallChange="10" TickFrequency="50" IsSnapToTickEnabled="True" ToolTip="Compenser le décalage (en ms)"/>
+                        <TextBlock Text="{Binding DelayMs, StringFormat={}{0} ms}" VerticalAlignment="Center" Margin="5,0,0,0" FontSize="12" Foreground="Gray" Width="45"/>
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <!-- Contrôles audio globaux et Barre de progression -->
+        <StackPanel Grid.Row="3" Margin="0,15,0,0">
+            <!-- Barre de progression de la piste (Slider horizontal avec TextBlocks) -->
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <TextBlock x:Name="CurrentTimeText" Grid.Column="0" Text="00:00" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                
+                <Slider x:Name="ProgressSlider" Grid.Column="1" VerticalAlignment="Center" 
+                        Thumb.DragStarted="ProgressSlider_DragStarted" 
+                        Thumb.DragCompleted="ProgressSlider_DragCompleted" />
+                        
+                <TextBlock x:Name="TotalTimeText" Grid.Column="2" Text="00:00" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            </Grid>
+            
+            <Grid>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                    <Button Content="Lecture" Width="100" Height="30" Click="PlayButton_Click" Margin="0,0,10,0"/>
+                    <Button Content="Stop" Width="100" Height="30" Click="StopButton_Click" Margin="0,0,15,0"/>
+
+                    <TextBlock Text="Volume général musique :" VerticalAlignment="Center" Margin="0,0,5,0" FontWeight="SemiBold"/>
+                    <Slider x:Name="VolumeSlider" Width="100" Minimum="0" Maximum="1" Value="1" VerticalAlignment="Center" ValueChanged="VolumeSlider_ValueChanged"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Actualiser" Width="100" Height="30" Click="RefreshButton_Click"/>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+    </Grid>
+</Window>
