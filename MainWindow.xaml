@@ -14,15 +14,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Recherche fichier -->
-        <Grid Grid.Row="0" Margin="0,0,0,15">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <TextBox x:Name="FilePathTextBox" Grid.Column="0" IsReadOnly="True" Margin="0,0,10,0" VerticalContentAlignment="Center" FontSize="14" />
-            <Button Content="Parcourir..." Grid.Column="1" Width="100" Height="30" Click="BrowseButton_Click"/>
-        </Grid>
+        <!-- Recherche fichier, URL ou Capture -->
+        <GroupBox Header="Source Audio (Fichier local, URL YouTube ou PC)" Grid.Row="0" Margin="0,0,0,15">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SourceTextBox" Grid.Column="0" Margin="5" VerticalContentAlignment="Center" FontSize="14" ToolTip="Entrez une URL YouTube ou parcourez pour un fichier local" />
+                <Button Content="Parcourir..." Grid.Column="1" Width="100" Height="30" Click="BrowseButton_Click" Margin="5"/>
+                <Button Content="Écouter le PC (Loopback)" Grid.Column="2" Width="160" Height="30" Click="CapturePcButton_Click" Margin="5"/>
+            </Grid>
+        </GroupBox>
 
         <TextBlock Grid.Row="1" Text="Périphériques audio disponibles :" FontSize="16" FontWeight="Bold" Margin="0,0,0,10" />
 

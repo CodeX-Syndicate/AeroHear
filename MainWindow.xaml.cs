@@ -21,6 +21,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Threading;
 using System.Windows.Controls.Primitives;
+using YoutubeExplode;
+using YoutubeExplode.Videos.Streams;
+using NAudio.Wave.SampleProviders;
 
 namespace AeroHear
 {
@@ -114,7 +117,11 @@ namespace AeroHear
             public AudioDeviceModel DeviceModel { get; set; } = null!;
         }
 
-        private AudioFileReader? _audioFileReader;
+        private WaveStream? _audioStream;
+        private IWaveProvider? _finalProvider;
+        private VolumeSampleProvider? _volumeProvider;
+        private WasapiLoopbackCapture? _loopbackCapture;
+
         private readonly List<ActiveOutput> _activeOutputs = new();
         private CancellationTokenSource? _playbackCts;
         private string _selectedFilePath = string.Empty;
@@ -163,10 +170,16 @@ namespace AeroHear
 
         private void Timer_Tick(object? sender, EventArgs e)
         {
-            if (!_isDraggingSlider && _audioFileReader != null)
+            if (!_isDraggingSlider && _audioStream != null)
             {
-                ProgressSlider.Value = _audioFileReader.CurrentTime.TotalSeconds;
-                CurrentTimeText.Text = _audioFileReader.CurrentTime.ToString(@"mm\:ss");
+                ProgressSlider.Value = _audioStream.CurrentTime.TotalSeconds;
+                CurrentTimeText.Text = _audioStream.CurrentTime.ToString(@"mm\:ss");
+            }
+            else if (_loopbackCapture != null)
+            {
+                // UI disabled for loopback
+                CurrentTimeText.Text = "Live";
+                TotalTimeText.Text = "Live";
             }
         }
 
@@ -179,14 +192,24 @@ namespace AeroHear
                 SaveDelaysSettings();
 
                 // Resynchroniser à la volée quand le slider modifie le délai.
-                if (_audioFileReader != null)
+                if (_audioStream != null && _finalProvider != null)
                 {
-                    var currentTime = _audioFileReader.CurrentTime;
-                    _audioFileReader.CurrentTime = currentTime;
+                    if (_audioStream.CanSeek)
+                    {
+                        try { _audioStream.CurrentTime = _audioStream.CurrentTime; } catch { }
+                    }
                     foreach (var output in _activeOutputs)
                     {
                         output.Buffer.ClearBuffer(); 
-                        AddSilence(output.Buffer, output.DeviceModel.DelayMs, _audioFileReader.WaveFormat);
+                        AddSilence(output.Buffer, output.DeviceModel.DelayMs, _finalProvider.WaveFormat);
+                    }
+                }
+                else if (_loopbackCapture != null)
+                {
+                    foreach (var output in _activeOutputs)
+                    {
+                        output.Buffer.ClearBuffer(); 
+                        AddSilence(output.Buffer, output.DeviceModel.DelayMs, _loopbackCapture.WaveFormat);
                     }
                 }
             }
@@ -245,15 +268,16 @@ namespace AeroHear
             if (openFileDialog.ShowDialog() == true)
             {
                 _selectedFilePath = openFileDialog.FileName;
-                FilePathTextBox.Text = _selectedFilePath;
+                SourceTextBox.Text = _selectedFilePath;
             }
         }
 
-        private void PlayButton_Click(object sender, RoutedEventArgs e)
+        private async void PlayButton_Click(object sender, RoutedEventArgs e)
         {
-            if (string.IsNullOrEmpty(_selectedFilePath))
+            string sourceUrl = SourceTextBox.Text;
+            if (string.IsNullOrEmpty(sourceUrl))
             {
-                MessageBox.Show("Veuillez d'abord sélectionner un fichier audio.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Veuillez entrer une URL YouTube ou sélectionner un fichier audio.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -265,55 +289,142 @@ namespace AeroHear
             }
 
             StopPlayback();
+            SourceTextBox.IsReadOnly = true;
 
             try
             {
-                _audioFileReader = new AudioFileReader(_selectedFilePath);
-                _audioFileReader.Volume = (float)VolumeSlider.Value;
+                if (sourceUrl.Contains("youtube.com") || sourceUrl.Contains("youtu.be"))
+                {
+                    SourceTextBox.Text = "Chargement de la vidéo YouTube...";
+                    var youtube = new YoutubeClient();
+                    var manifest = await youtube.Videos.Streams.GetManifestAsync(sourceUrl);
+                    var streamInfo = manifest.GetAudioOnlyStreams().GetWithHighestBitrate();
 
-                ProgressSlider.Maximum = _audioFileReader.TotalTime.TotalSeconds;
-                TotalTimeText.Text = _audioFileReader.TotalTime.ToString(@"mm\:ss");
+                    _audioStream = new MediaFoundationReader(streamInfo.Url);
+                    _volumeProvider = new VolumeSampleProvider(_audioStream.ToSampleProvider()) { Volume = (float)VolumeSlider.Value };
+                    _finalProvider = _volumeProvider.ToWaveProvider(); // Gives 32 bit float provider which is fine for WasapiOut
+                    SourceTextBox.Text = sourceUrl;
+                }
+                else
+                {
+                    var afr = new AudioFileReader(sourceUrl);
+                    afr.Volume = (float)VolumeSlider.Value;
+                    _audioStream = afr;
+                    _volumeProvider = null;
+                    _finalProvider = afr;
+                }
+
+                ProgressSlider.Maximum = _audioStream.TotalTime.TotalSeconds;
+                TotalTimeText.Text = _audioStream.TotalTime.ToString(@"mm\:ss");
 
                 _activeOutputs.Clear();
 
                 foreach (var deviceModel in selectedDevices)
                 {
-                    // S'assurer que le périphérique n'est pas muet et que le volume est audible
-                    if (deviceModel.IsMuted)
-                        deviceModel.IsMuted = false;
-                    if (deviceModel.DeviceVolume < 10)
-                        deviceModel.DeviceVolume = 50;
+                    if (deviceModel.IsMuted) deviceModel.IsMuted = false;
+                    if (deviceModel.DeviceVolume < 10) deviceModel.DeviceVolume = 50;
 
-                    // NAudio WasapiOut
                     var wasapiOut = new WasapiOut(deviceModel.Device, AudioClientShareMode.Shared, true, 50);
-
-                    var buffer = new BufferedWaveProvider(_audioFileReader.WaveFormat)
+                    var buffer = new BufferedWaveProvider(_finalProvider.WaveFormat)
                     {
                         BufferDuration = TimeSpan.FromSeconds(5),
                         DiscardOnBufferOverflow = true
                     };
 
                     wasapiOut.Init(buffer);
-                    wasapiOut.Play();
 
-                    _activeOutputs.Add(new ActiveOutput
-                    {
-                        WasapiOut = wasapiOut,
-                        Buffer = buffer,
-                        DeviceModel = deviceModel
-                    });
-
-                    // Instaurer le décalage demandé avant le début du son pour ce périphérique
-                    AddSilence(buffer, deviceModel.DelayMs, _audioFileReader.WaveFormat);
+                    _activeOutputs.Add(new ActiveOutput { WasapiOut = wasapiOut, Buffer = buffer, DeviceModel = deviceModel });
+                    AddSilence(buffer, deviceModel.DelayMs, _finalProvider.WaveFormat);
                 }
 
                 _playbackCts = new CancellationTokenSource();
+
+                // On précharge 500ms d'audio pour éviter que WasapiOut ne démarre avec un buffer vide (qui rajouterait du silence hasardeux)
+                byte[] preloadBuffer = new byte[_finalProvider.WaveFormat.AverageBytesPerSecond / 2];
+                int preloadRead = _finalProvider.Read(preloadBuffer, 0, preloadBuffer.Length);
+                if (preloadRead > 0)
+                {
+                    foreach (var output in _activeOutputs)
+                    {
+                        output.Buffer.AddSamples(preloadBuffer, 0, preloadRead);
+                    }
+                }
+
+                // On lance la lecture au même instant pour tous les périphériques !
+                foreach (var output in _activeOutputs)
+                {
+                    output.WasapiOut.Play();
+                }
+
                 _timer.Start();
                 _ = PumpAudioAsync(_playbackCts.Token);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Erreur lors de la lecture : {ex.Message}", "Erreur", MessageBoxButton.OK, MessageBoxImage.Error);
+                StopPlayback();
+            }
+        }
+
+        private void CapturePcButton_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedDevices = AudioDevices.Where(d => d.IsSelected).ToList();
+            if (!selectedDevices.Any())
+            {
+                MessageBox.Show("Veuillez sélectionner au moins un périphérique audio.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            StopPlayback();
+            SourceTextBox.IsReadOnly = true;
+            SourceTextBox.Text = "Mode Écoute PC actif (Loopback)...";
+
+            try
+            {
+                _loopbackCapture = new WasapiLoopbackCapture();
+                var format = _loopbackCapture.WaveFormat;
+                _activeOutputs.Clear();
+
+                foreach (var deviceModel in selectedDevices)
+                {
+                    if (deviceModel.IsMuted) deviceModel.IsMuted = false;
+                    if (deviceModel.DeviceVolume < 10) deviceModel.DeviceVolume = 50;
+
+                    var wasapiOut = new WasapiOut(deviceModel.Device, AudioClientShareMode.Shared, true, 50);
+                    var buffer = new BufferedWaveProvider(format)
+                    {
+                        BufferDuration = TimeSpan.FromSeconds(5),
+                        DiscardOnBufferOverflow = true
+                    };
+
+                    wasapiOut.Init(buffer);
+
+                    _activeOutputs.Add(new ActiveOutput { WasapiOut = wasapiOut, Buffer = buffer, DeviceModel = deviceModel });
+                    AddSilence(buffer, deviceModel.DelayMs, format);
+                }
+
+                _loopbackCapture.DataAvailable += (s, args) =>
+                {
+                    foreach (var output in _activeOutputs)
+                    {
+                        output.Buffer.AddSamples(args.Buffer, 0, args.BytesRecorded);
+                    }
+                };
+
+                _loopbackCapture.RecordingStopped += (s, args) => { StopPlayback(); };
+
+                // On lance la lecture juste avant l'enregistrement pour ne pas avoir de consommation de silence non-contrôlée
+                foreach (var output in _activeOutputs)
+                {
+                    output.WasapiOut.Play();
+                }
+
+                _loopbackCapture.StartRecording();
+                _timer.Start();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur lors de la capture : {ex.Message}", "Erreur", MessageBoxButton.OK, MessageBoxImage.Error);
                 StopPlayback();
             }
         }
@@ -326,13 +437,13 @@ namespace AeroHear
         private void ProgressSlider_DragCompleted(object sender, DragCompletedEventArgs e)
         {
             _isDraggingSlider = false;
-            if (_audioFileReader != null)
+            if (_audioStream != null && _finalProvider != null && _audioStream.CanSeek)
             {
-                _audioFileReader.CurrentTime = TimeSpan.FromSeconds(ProgressSlider.Value);
+                try { _audioStream.CurrentTime = TimeSpan.FromSeconds(ProgressSlider.Value); } catch { }
                 foreach (var output in _activeOutputs)
                 {
                     output.Buffer.ClearBuffer(); 
-                    AddSilence(output.Buffer, output.DeviceModel.DelayMs, _audioFileReader.WaveFormat);
+                    AddSilence(output.Buffer, output.DeviceModel.DelayMs, _finalProvider.WaveFormat);
                 }
             }
         }
@@ -362,9 +473,13 @@ namespace AeroHear
 
         private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
-            if (_audioFileReader != null)
+            if (_audioStream is AudioFileReader afr)
             {
-                _audioFileReader.Volume = (float)VolumeSlider.Value;
+                afr.Volume = (float)VolumeSlider.Value;
+            }
+            else if (_volumeProvider != null)
+            {
+                _volumeProvider.Volume = (float)VolumeSlider.Value;
             }
         }
 
@@ -375,6 +490,13 @@ namespace AeroHear
             _playbackCts?.Dispose();
             _playbackCts = null;
 
+            if (_loopbackCapture != null)
+            {
+                _loopbackCapture.StopRecording();
+                _loopbackCapture.Dispose();
+                _loopbackCapture = null;
+            }
+
             foreach (var output in _activeOutputs)
             {
                 output.WasapiOut.Stop();
@@ -382,15 +504,20 @@ namespace AeroHear
             }
             _activeOutputs.Clear();
 
-            _audioFileReader?.Dispose();
-            _audioFileReader = null;
+            _audioStream?.Dispose();
+            _audioStream = null;
+            _finalProvider = null;
+            _volumeProvider = null;
+
+            if (SourceTextBox != null)
+                SourceTextBox.IsReadOnly = false;
         }
 
         private async Task PumpAudioAsync(CancellationToken token)
         {
-            if (_audioFileReader == null) return;
+            if (_finalProvider == null) return;
 
-            byte[] readBuffer = new byte[_audioFileReader.WaveFormat.AverageBytesPerSecond / 10]; // 100ms buffer
+            byte[] readBuffer = new byte[_finalProvider.WaveFormat.AverageBytesPerSecond / 10]; // 100ms buffer
 
             try
             {
@@ -403,7 +530,7 @@ namespace AeroHear
                         continue;
                     }
 
-                    int bytesRead = _audioFileReader.Read(readBuffer, 0, readBuffer.Length);
+                    int bytesRead = _finalProvider.Read(readBuffer, 0, readBuffer.Length);
                     if (bytesRead == 0)
                     {
                         break; // Fin du fichier
