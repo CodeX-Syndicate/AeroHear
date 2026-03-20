@@ -252,6 +252,22 @@ namespace AeroHear
             }
         }
 
+        private void SelectAll_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (var device in AudioDevices)
+            {
+                device.IsSelected = true;
+            }
+        }
+
+        private void DeselectAll_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (var device in AudioDevices)
+            {
+                device.IsSelected = false;
+            }
+        }
+
         private void RefreshButton_Click(object sender, RoutedEventArgs e)
         {
             LoadAudioDevices();
@@ -390,11 +406,13 @@ namespace AeroHear
                     if (deviceModel.IsMuted) deviceModel.IsMuted = false;
                     if (deviceModel.DeviceVolume < 10) deviceModel.DeviceVolume = 50;
 
-                    var wasapiOut = new WasapiOut(deviceModel.Device, AudioClientShareMode.Shared, true, 50);
+                    // EventSync passé à false pour plus de compatibilité avec Loopback
+                    var wasapiOut = new WasapiOut(deviceModel.Device, AudioClientShareMode.Shared, false, 50);
                     var buffer = new BufferedWaveProvider(format)
                     {
                         BufferDuration = TimeSpan.FromSeconds(5),
-                        DiscardOnBufferOverflow = true
+                        DiscardOnBufferOverflow = true,
+                        ReadFully = true
                     };
 
                     wasapiOut.Init(buffer);
@@ -411,7 +429,17 @@ namespace AeroHear
                     }
                 };
 
-                _loopbackCapture.RecordingStopped += (s, args) => { StopPlayback(); };
+                _loopbackCapture.RecordingStopped += (s, args) => 
+                { 
+                    if (args.Exception != null)
+                    {
+                        Dispatcher.Invoke(() => 
+                        {
+                            MessageBox.Show($"La capture PC s'est arrêtée. Erreur: {args.Exception.Message}", "Erreur de Capture PC", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        });
+                    }
+                    Dispatcher.Invoke(() => StopPlayback());
+                };
 
                 // On lance la lecture juste avant l'enregistrement pour ne pas avoir de consommation de silence non-contrôlée
                 foreach (var output in _activeOutputs)
@@ -485,6 +513,13 @@ namespace AeroHear
 
         private void StopPlayback()
         {
+            if (_beepWindow != null)
+            {
+                var w = _beepWindow;
+                _beepWindow = null;
+                w.Close();
+            }
+
             _timer?.Stop();
             _playbackCts?.Cancel();
             _playbackCts?.Dispose();
@@ -550,6 +585,117 @@ namespace AeroHear
             {
                 System.Diagnostics.Debug.WriteLine($"Erreur pendant le relais audio : {ex.Message}");
             }
+        }
+
+        private BeepTestWindow? _beepWindow;
+
+        private void TestBeepButton_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedDevices = AudioDevices.Where(d => d.IsSelected).ToList();
+            if (!selectedDevices.Any())
+            {
+                MessageBox.Show("Veuillez sélectionner au moins un périphérique audio pour tester le délai.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (_beepWindow != null) return;
+
+            StopPlayback();
+            SourceTextBox.IsReadOnly = true;
+            SourceTextBox.Text = "Mode Test de Délai actif...";
+
+            try
+            {
+                var metronome = new MetronomeProvider(44100, 2);
+                _finalProvider = metronome.ToWaveProvider();
+
+                _activeOutputs.Clear();
+
+                foreach (var deviceModel in selectedDevices)
+                {
+                    if (deviceModel.IsMuted) deviceModel.IsMuted = false;
+                    if (deviceModel.DeviceVolume < 10) deviceModel.DeviceVolume = 50;
+
+                    var wasapiOut = new WasapiOut(deviceModel.Device, AudioClientShareMode.Shared, true, 50);
+                    var buffer = new BufferedWaveProvider(_finalProvider.WaveFormat)
+                    {
+                        BufferDuration = TimeSpan.FromSeconds(5),
+                        DiscardOnBufferOverflow = true,
+                        ReadFully = true
+                    };
+
+                    wasapiOut.Init(buffer);
+
+                    _activeOutputs.Add(new ActiveOutput { WasapiOut = wasapiOut, Buffer = buffer, DeviceModel = deviceModel });
+                    AddSilence(buffer, deviceModel.DelayMs, _finalProvider.WaveFormat);
+                }
+
+                _playbackCts = new CancellationTokenSource();
+
+                foreach (var output in _activeOutputs)
+                {
+                    output.WasapiOut.Play();
+                }
+
+                _timer.Start();
+                _ = PumpAudioAsync(_playbackCts.Token);
+
+                _beepWindow = new BeepTestWindow();
+                _beepWindow.Closed += (s, args) =>
+                {
+                    StopPlayback();
+                    _beepWindow = null;
+                };
+                _beepWindow.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur lors de l'initialisation du bips : {ex.Message}", "Erreur", MessageBoxButton.OK, MessageBoxImage.Error);
+                StopPlayback();
+            }
+        }
+    }
+
+    public class MetronomeProvider : ISampleProvider
+    {
+        private readonly SignalGenerator _signalGenerator;
+        private readonly int _sampleRate;
+        private readonly int _channels;
+        private long _positionSamples;
+
+        public WaveFormat WaveFormat => _signalGenerator.WaveFormat;
+
+        public MetronomeProvider(int sampleRate, int channels)
+        {
+            _sampleRate = sampleRate;
+            _channels = channels;
+            _signalGenerator = new SignalGenerator(sampleRate, channels)
+            {
+                Type = SignalGeneratorType.Sin,
+                Gain = 0.2, // Niveau sonore du bip
+                Frequency = 800 // Fréquence agréable de 800Hz
+            };
+        }
+
+        public int Read(float[] buffer, int offset, int count)
+        {
+            int read = _signalGenerator.Read(buffer, offset, count);
+
+            // Bip d'1 seconde (Metronome classique) : 100ms de son, 900ms de silence.
+            int samplesPerSecond = _sampleRate * _channels;
+            int beepDurationSamples = (int)(samplesPerSecond * 0.1); 
+
+            for (int i = 0; i < read; i++)
+            {
+                long currentPos = _positionSamples + i;
+                if (currentPos % samplesPerSecond > beepDurationSamples)
+                {
+                    buffer[offset + i] = 0.0f;
+                }
+            }
+
+            _positionSamples += read;
+            return read;
         }
     }
 }

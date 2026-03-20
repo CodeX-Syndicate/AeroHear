@@ -21,14 +21,20 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBox x:Name="SourceTextBox" Grid.Column="0" Margin="5" VerticalContentAlignment="Center" FontSize="14" ToolTip="Entrez une URL YouTube ou parcourez pour un fichier local" />
                 <Button Content="Parcourir..." Grid.Column="1" Width="100" Height="30" Click="BrowseButton_Click" Margin="5"/>
                 <Button Content="Écouter le PC (Loopback)" Grid.Column="2" Width="160" Height="30" Click="CapturePcButton_Click" Margin="5"/>
+                <Button Content="Test de Délai (Bip)" Grid.Column="3" Width="135" Height="30" Click="TestBeepButton_Click" Margin="5" ToolTip="Jouer un bip régulier pour régler le décalage des périphériques" />
             </Grid>
         </GroupBox>
 
-        <TextBlock Grid.Row="1" Text="Périphériques audio disponibles :" FontSize="16" FontWeight="Bold" Margin="0,0,0,10" />
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBlock Text="Périphériques audio disponibles :" FontSize="16" FontWeight="Bold" Margin="0,0,10,0" VerticalAlignment="Center" />
+            <Button Content="Sélectionner tout" Width="120" Height="25" Click="SelectAll_Click" Margin="0,0,10,0" VerticalAlignment="Center" />
+            <Button Content="Désélectionner tout" Width="130" Height="25" Click="DeselectAll_Click" VerticalAlignment="Center" />
+        </StackPanel>
 
         <ListBox Grid.Row="2" ItemsSource="{Binding AudioDevices}">
             <ListBox.ItemTemplate>
